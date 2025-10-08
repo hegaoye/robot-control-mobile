@@ -3,6 +3,7 @@ import { Button } from './components/ui/button';
 import { Slider } from './components/ui/slider';
 import { Textarea } from './components/ui/textarea';
 import { CrossDirectionPad } from './components/CrossDirectionPad';
+import { WiFiSignal } from './components/WiFiSignal';
 import { Power, Square, RotateCcw, Gauge, RotateCw } from 'lucide-react';
 import { sendRobotCommand, sendPowerCommand } from './services/robotApi';
 
@@ -145,10 +146,13 @@ export default function App() {
       <div className="bg-slate-800 rounded-lg p-6 mb-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm text-slate-300">方向控制</h3>
-          <div className="flex-1 flex items-center justify-center gap-2">
-            <Gauge className="w-5 h-5 text-blue-400" />
-            <span className="text-2xl font-medium text-blue-400">{currentSpeed}</span>
-            <span className="text-sm text-slate-400">HZ</span>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <Gauge className="w-5 h-5 text-blue-400" />
+              <span className="text-2xl font-medium text-blue-400">{currentSpeed}</span>
+              <span className="text-sm text-slate-400">HZ</span>
+            </div>
+            <WiFiSignal />
           </div>
           <Button
             variant="ghost"
