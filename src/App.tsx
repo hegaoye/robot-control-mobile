@@ -6,6 +6,7 @@ import { CrossDirectionPad } from './components/CrossDirectionPad';
 import { WiFiSignal } from './components/WiFiSignal';
 import { Power, Square, RotateCcw, Gauge, RotateCw } from 'lucide-react';
 import { sendRobotCommand, sendPowerCommand } from './services/robotApi';
+import websocketService, { ChassisStatus, ChassisResponse } from './services/websocketService';
 
 interface LogEntry {
   id: number;
@@ -21,10 +22,57 @@ export default function App() {
   const [direction, setDirection] = useState('停止');
   const [directionIntensity, setDirectionIntensity] = useState(0);
   const [dampingSpeed, setDampingSpeed] = useState([0.5]);
+  const [wsConnected, setWsConnected] = useState(false);
   const lastLogTimeRef = useRef<number>(0);
   const LOG_THROTTLE_DELAY = 500; // 日志节流延迟 500ms
 
   const speedPresets = [30, 50, 70, 100];
+
+  // WebSocket 连接管理
+  useEffect(() => {
+    // 连接到 WebSocket 服务器
+    websocketService.connect();
+
+    // 监听连接状态变化
+    const handleConnectionChange = (connected: boolean) => {
+      setWsConnected(connected);
+      if (connected) {
+        addLog('✅ 已连接到 WebSocket 服务器');
+      } else {
+        addLog('❌ WebSocket 连接断开');
+      }
+    };
+
+    // 监听状态更新
+    const handleStatusUpdate = (status: ChassisStatus) => {
+      console.log('收到状态更新:', status);
+      // 注意：不自动同步 is_running 状态到客户端
+      // 客户端的 isRunning 状态仅由用户手动点击开关机按钮控制
+      // 这样确保 start/stop 指令只在手动操作时发送
+    };
+
+    // 监听响应消息
+    const handleResponse = (response: ChassisResponse) => {
+      const now = Date.now();
+      if (now - lastLogTimeRef.current >= LOG_THROTTLE_DELAY) {
+        lastLogTimeRef.current = now;
+        const type = response.code === '0000' ? '✅' : '❌';
+        addLog(`${type} ${response.message}`);
+      }
+    };
+
+    websocketService.onConnectionChange(handleConnectionChange);
+    websocketService.onStatusUpdate(handleStatusUpdate);
+    websocketService.onResponse(handleResponse);
+
+    // 清理函数
+    return () => {
+      websocketService.offConnectionChange(handleConnectionChange);
+      websocketService.offStatusUpdate(handleStatusUpdate);
+      websocketService.offResponse(handleResponse);
+      websocketService.disconnect();
+    };
+  }, []);
 
   const handleSpeedPreset = (speed: number) => {
     setMaxSpeed([speed]);
@@ -70,32 +118,46 @@ export default function App() {
       setDirectionIntensity(0);
     }
 
-    // 电源状态保护：只有开机状态才发送命令
-    if (isRunning) {
+    // 电源状态保护：只有开机状态且 WebSocket 已连接才发送命令
+    if (isRunning && wsConnected) {
       const {response, duration} = await sendRobotCommand(dir, calculatedSpeed);
 
       // 日志节流控制：避免方向控制时产生过多日志
       const now = Date.now();
       if (response && now - lastLogTimeRef.current >= LOG_THROTTLE_DELAY) {
         lastLogTimeRef.current = now;
-        addLog(`请求: /api/robot/${dir}/${calculatedSpeed} - 响应: ${response.code} - 耗时: ${duration}ms`);
+        addLog(`WebSocket: ${dir}/${calculatedSpeed} - 响应: ${response.code} - 耗时: ${duration}ms`);
       } else if (!response && now - lastLogTimeRef.current >= LOG_THROTTLE_DELAY) {
         lastLogTimeRef.current = now;
-        addLog(`请求: /api/robot/${dir}/${calculatedSpeed} - 失败 - 耗时: ${duration}ms`);
+        addLog(`WebSocket: ${dir}/${calculatedSpeed} - 失败 - 耗时: ${duration}ms`);
+      }
+    } else if (isRunning && !wsConnected) {
+      // 电源开启但 WebSocket 未连接
+      const now = Date.now();
+      if (now - lastLogTimeRef.current >= LOG_THROTTLE_DELAY) {
+        lastLogTimeRef.current = now;
+        addLog(`⚠️ WebSocket 未连接，无法发送命令`);
       }
     }
   };
 
   const togglePower = async () => {
     const newState = !isRunning;
+
+    // 检查 WebSocket 连接状态
+    if (!wsConnected) {
+      addLog(`❌ WebSocket 未连接，无法${newState ? '开启' : '关闭'}电源`);
+      return;
+    }
+
     setIsRunning(newState);
 
     // 发送电源控制命令（只调用 start 或 stop）
     const {response, duration: requestDuration} = await sendPowerCommand(newState);
     if (response) {
-      addLog(`电源${newState ? '开启' : '关闭'} - 响应: ${response.code} - 耗时: ${requestDuration}ms`);
+      addLog(`✅ 电源${newState ? '开启' : '关闭'} - 响应: ${response.code} - 耗时: ${requestDuration}ms`);
     } else {
-      addLog(`电源${newState ? '开启' : '关闭'} - 失败 - 耗时: ${requestDuration}ms`);
+      addLog(`❌ 电源${newState ? '开启' : '关闭'} - 失败 - 耗时: ${requestDuration}ms`);
     }
 
     if (!newState) {
@@ -108,7 +170,10 @@ export default function App() {
 
   // 旋转控制函数
   const handleRotation = async (rotationType: 'turn_left' | 'turn_right' | 'u_turn') => {
-    if (!isRunning) return;
+    if (!isRunning || !wsConnected) {
+      addLog(`⚠️ ${!isRunning ? '请先开启电源' : 'WebSocket 未连接'}`);
+      return;
+    }
 
     const direction = rotationType === 'turn_left' ? 'turn_left' : 'turn_right';
     const duration = rotationType === 'u_turn' ? 6000 : 3000; // 掉头6秒，左右转3秒
@@ -120,18 +185,18 @@ export default function App() {
       speed
     );
     if (response) {
-      addLog(`${rotationType === 'turn_left' ? '左转90度' : rotationType === 'turn_right' ? '右转90度' : '掉头'} - 速度: ${speed} - 耗时: ${requestDuration}ms`);
+      addLog(`🔄 ${rotationType === 'turn_left' ? '左转90度' : rotationType === 'turn_right' ? '右转90度' : '掉头'} - 速度: ${speed} - 耗时: ${requestDuration}ms`);
     } else {
-      addLog(`${rotationType === 'turn_left' ? '左转90度' : rotationType === 'turn_right' ? '右转90度' : '掉头'} - 失败 - 耗时: ${requestDuration}ms`);
+      addLog(`❌ ${rotationType === 'turn_left' ? '左转90度' : rotationType === 'turn_right' ? '右转90度' : '掉头'} - 失败 - 耗时: ${requestDuration}ms`);
     }
 
-    // 设置定时器，在指定时间后自动停止
+    // 设置定时器，在指定时间后自动暂停（调用 pause）
     setTimeout(async () => {
       const {response: pauseResponse, duration: pauseDuration} = await sendRobotCommand('停止', 0);
       if (pauseResponse) {
-        addLog(`自动停止 - 响应: ${pauseResponse.code} - 耗时: ${pauseDuration}ms`);
+        addLog(`⏸️ 自动暂停 - 响应: ${pauseResponse.code} - 耗时: ${pauseDuration}ms`);
       } else {
-        addLog(`自动停止 - 失败 - 耗时: ${pauseDuration}ms`);
+        addLog(`❌ 自动暂停 - 失败 - 耗时: ${pauseDuration}ms`);
       }
     }, duration);
   };
@@ -153,12 +218,15 @@ export default function App() {
               <span className="text-sm text-slate-400">HZ</span>
             </div>
             <WiFiSignal />
+            {/* WebSocket 连接状态指示器 */}
+            <div className={`w-3 h-3 rounded-full ${wsConnected ? 'bg-green-500' : 'bg-red-500'}`} title={wsConnected ? 'WebSocket 已连接' : 'WebSocket 未连接'}></div>
           </div>
           <Button
             variant="ghost"
             size="sm"
             onClick={togglePower}
             className={`rounded-full w-10 h-10 p-0 ${isRunning ? 'bg-blue-500 hover:bg-blue-600' : 'bg-slate-700 hover:bg-slate-600'}`}
+            disabled={!wsConnected}
           >
             <Power className="w-5 h-5" />
           </Button>

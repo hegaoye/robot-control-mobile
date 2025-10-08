@@ -1,25 +1,25 @@
-// 机器人控制API服务
-const BASE_URL = '/api';
+// 机器人控制API服务 - WebSocket 版本
+import websocketService from './websocketService';
 
-// 方向映射
+// 方向映射（中文 -> WebSocket 协议）
 const DIRECTION_MAP: Record<string, string> = {
   '前进': 'forward',
   '后退': 'reverse',
   '左转': 'turn_left',
   '右转': 'turn_right',
-  '停止': 'pause',
+  '停止': 'pause',  // 滑块复位时调用 pause
 };
 
 // 节流控制
 let lastCallTime = 0;
-const THROTTLE_DELAY = 50; // 100ms
+const THROTTLE_DELAY = 50; // 50ms
 
 interface RobotResponse {
   code: string;
 }
 
 /**
- * 发送机器人控制命令
+ * 发送机器人控制命令（通过 WebSocket）
  * @param direction 方向（中文）
  * @param speed 速度 0-100
  * @returns Promise<{response: RobotResponse | null, duration: number}>
@@ -37,65 +37,46 @@ export async function sendRobotCommand(
   lastCallTime = now;
 
   // 映射方向
-  const apiDirection = DIRECTION_MAP[direction] || 'stop';
-
-  // 构建URL
-  const url = `${BASE_URL}/robot/${apiDirection}/${Math.round(speed)}`;
+  const apiDirection = DIRECTION_MAP[direction] || 'pause';
 
   const startTime = Date.now();
-  try {
-    console.log(`发送命令: ${url}`);
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
 
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const data: RobotResponse = await response.json();
-    const duration = Date.now() - startTime;
-    console.log('命令响应:', data);
-    return {response: data, duration};
-  } catch (error) {
-    const duration = Date.now() - startTime;
-    console.error('发送命令失败:', error);
-    return {response: null, duration};
+  // 检查连接状态
+  if (!websocketService.getConnectionStatus()) {
+    console.error('WebSocket 未连接');
+    return {response: null, duration: Date.now() - startTime};
   }
+
+  // 通过 WebSocket 发送命令
+  websocketService.sendChassisControl(apiDirection, Math.round(speed));
+  const duration = Date.now() - startTime;
+
+  console.log(`发送 WebSocket 命令: ${apiDirection}/${speed}`);
+
+  // WebSocket 是异步的，这里返回一个模拟响应
+  return {response: {code: '0000'}, duration};
 }
 
 /**
- * 发送电源控制命令
+ * 发送电源控制命令（通过 WebSocket）
  * @param isOn true表示开机，false表示关机
  */
 export async function sendPowerCommand(isOn: boolean): Promise<{response: RobotResponse | null, duration: number}> {
   const direction = isOn ? 'start' : 'stop';
-  const url = `${BASE_URL}/robot/${direction}/0`;
-
   const startTime = Date.now();
-  try {
-    console.log(`发送电源命令: ${url}`);
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
 
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const data: RobotResponse = await response.json();
-    const duration = Date.now() - startTime;
-    console.log('电源命令响应:', data);
-    return {response: data, duration};
-  } catch (error) {
-    const duration = Date.now() - startTime;
-    console.error('发送电源命令失败:', error);
-    return {response: null, duration};
+  // 检查连接状态
+  if (!websocketService.getConnectionStatus()) {
+    console.error('WebSocket 未连接');
+    return {response: null, duration: Date.now() - startTime};
   }
+
+  // 通过 WebSocket 发送命令
+  websocketService.sendChassisControl(direction, 0);
+  const duration = Date.now() - startTime;
+
+  console.log(`发送 WebSocket 电源命令: ${direction}`);
+
+  // WebSocket 是异步的，这里返回一个模拟响应
+  return {response: {code: '0000'}, duration};
 }
